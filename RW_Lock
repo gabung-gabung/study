@@ -1,0 +1,87 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace ServerCore
+{
+    class Lock //RWLock 구현
+    {
+        //재귀적 락 허용(O) WriteLock -> ReadLock, WriteLock -> WriteLock, ReadLock -> WriteLock은 안됨
+        const int EMPTY_FLAG = 0x00000000;
+        const int WRITE_MASK = 0x7FFF0000;
+        const int READ_MASK = 0x0000FFFF;
+        const int MAX_SPIN_COUNT = 5000;
+
+        int _writeCount = 0;
+        int _flag;
+
+        public void WriteLock() //아무도 WriteLock or ReadLock을 획득하고 있지않을때 입장이 가능하다
+        {
+            //동일 스레드가 WriteLock을 이미 획득하고 있는지 확인
+            int lockThreadId = (_flag & WRITE_MASK) >> 16;
+            if (lockThreadId == Thread.CurrentThread.ManagedThreadId)
+            {
+                _writeCount++;
+                return;
+            }
+
+            int desire = (Thread.CurrentThread.ManagedThreadId << 16) & WRITE_MASK;
+            while (true)
+            {
+                for (int i = 0; i < MAX_SPIN_COUNT; i++)
+                {
+                    if (Interlocked.CompareExchange(ref _flag, desire, EMPTY_FLAG) == EMPTY_FLAG)
+                    {
+                        _writeCount = 1;//첫번째 writeLock입장시 카운트 1
+                        return;
+                    }
+                    //if (_flag == EMPTY_FLAG)
+                    //    _flag = desire;
+                    //같은 기능이지만 멀티스레드환경에서는 두줄의 기능이 여러스레드에서 얽힐 가능성이 있어 Interlocked계열 함수를 써서 원자화시킴
+                }
+                Thread.Yield();
+            }
+        }
+
+        public void WriteUnLock()
+        {
+            int lockCount = --_writeCount;
+            if(lockCount == 0)
+                Interlocked.Exchange(ref _flag, EMPTY_FLAG);
+        }
+
+        public void ReadLock() //아무도 WriteLock을 획득하고 있지않을때 ReadCount를 1늘려준다
+        {
+            //동일 스레드가 WriteLock을 이미 획득하고 있는지 확인
+            int lockThreadId = (_flag & WRITE_MASK) >> 16;
+            if (lockThreadId == Thread.CurrentThread.ManagedThreadId)
+            {
+                Interlocked.Increment(ref _flag);
+                return;
+            }
+            while (true)
+            {
+                for (int i = 0; i < MAX_SPIN_COUNT; i++)
+                {
+                    int expected = _flag & READ_MASK; // ReadMask는 15비트이므로 and연산을 하면 WriteMask의 영역은 없어진다
+                    if (Interlocked.CompareExchange(ref _flag, expected + 1, expected) == expected)
+                        return;
+                    if ((_flag & WRITE_MASK) == EMPTY_FLAG)
+                    {
+                        _flag += 1;
+                        return;
+                    }
+                }
+                Thread.Yield();
+            }
+        }
+
+        public void ReadUnLock()
+        {
+            Interlocked.Decrement(ref _flag);
+        }
+    }
+}
